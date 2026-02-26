@@ -9,9 +9,13 @@
   ],
   "license": "ISC",
   "author": "Ryan T Laiber",
-  "type": "commonjs",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "test"
+    "start": "browser-sync -w . --server --files \"index.html,data/*.json,js/*.js\" --port 3000",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "browser-sync": "^3.0.4"
   }
 }
