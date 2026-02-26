@@ -1,0 +1,17 @@
+{
+  "name": "recomendation-system",
+  "version": "1.0.0",
+  "description": "ecommerce recomendation system with tensorflow",
+  "keywords": [
+    "tensorflow",
+    "ia",
+    "machine-learning"
+  ],
+  "license": "ISC",
+  "author": "Ryan T Laiber",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "test"
+  }
+}
