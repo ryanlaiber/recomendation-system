@@ -3,6 +3,7 @@ import { workerEvents } from "../events/constants.js";
 
 console.log("Model training worker initialized");
 let _globalCtx = {};
+let _model = null;
 
 const WEIGHTS = {
   category: 0.4,
@@ -83,21 +84,36 @@ function encodeUser(user, context) {
       .mean(0)
       .reshape([1, context.dimensions]);
   }
+
+  return tf
+    .concat1d([
+      tf.zeros([1]),
+      tf.tensor1d([
+        normalize(user.age, context.minAge, context.maxAge) * WEIGHTS.age,
+      ]),
+      tf.zeros([context.numCategories]),
+      tf.zeros([context.numColors]),
+    ])
+    .reshape([1, context.dimensions]);
 }
 
 function createTrainingData(context) {
   const inputs = [];
   const labels = [];
-  const users = context.users.forEach((user) => {
-    const userVector = encodeUser(user, context).dataSync();
-    context.catalog.forEach((product) => {
-      const productVector = encodeProduct(product, context).dataSync();
+  context.users
+    .filter((u) => !!u.purchases?.length)
+    .forEach((user) => {
+      const userVector = encodeUser(user, context).dataSync();
+      context.catalog.forEach((product) => {
+        const productVector = encodeProduct(product, context).dataSync();
 
-      const label = user.purchases.some((p) => p.name === product.name) ? 1 : 0;
-      inputs.push([...userVector, ...productVector]);
-      labels.push(label);
+        const label = user.purchases.some((p) => p.name === product.name)
+          ? 1
+          : 0;
+        inputs.push([...userVector, ...productVector]);
+        labels.push(label);
+      });
     });
-  });
 
   return {
     xs: tf.tensor2d(inputs),
@@ -132,6 +148,58 @@ function encodeProduct(product, context) {
   return tf.concat1d([price, age, category, color]);
 }
 
+async function configureNeuralNetAndTrain(trainData) {
+  const model = tf.sequential();
+
+  model.add(
+    tf.layers.dense({
+      inputShape: [trainData.inputDimention],
+      units: 128,
+      activation: "relu",
+    }),
+  );
+
+  model.add(
+    tf.layers.dense({
+      units: 64,
+      activation: "relu",
+    }),
+  );
+
+  model.add(
+    tf.layers.dense({
+      units: 32,
+      activation: "relu",
+    }),
+  );
+
+  model.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
+
+  model.compile({
+    optimizer: tf.train.adam(0.01),
+    loss: "binaryCrossentropy",
+    metrics: ["accuracy"],
+  });
+
+  await model.fit(trainData.xs, trainData.ys, {
+    epochs: 100,
+    batchSize: 32,
+    shuffle: true,
+    callbacks: {
+      onEpochEnd: (epoch, logs) => {
+        postMessage({
+          type: workerEvents.trainingLog,
+          epoch,
+          loss: logs.loss,
+          accuracy: logs.acc,
+        });
+      },
+    },
+  });
+
+  return model;
+}
+
 async function trainModel({ users }) {
   console.log("Training model with users:", users);
   postMessage({
@@ -154,7 +222,7 @@ async function trainModel({ users }) {
 
   const trainData = createTrainingData(context);
 
-  debugger;
+  _model = await configureNeuralNetAndTrain(trainData);
   postMessage({
     type: workerEvents.trainingLog,
     epoch: 1,
@@ -162,22 +230,45 @@ async function trainModel({ users }) {
     accuracy: 1,
   });
 
-  setTimeout(() => {
-    postMessage({
-      type: workerEvents.progressUpdate,
-      progress: { progress: 100 },
-    });
-    postMessage({ type: workerEvents.trainingComplete });
-  }, 1000);
+  postMessage({
+    type: workerEvents.progressUpdate,
+    progress: { progress: 100 },
+  });
+  postMessage({ type: workerEvents.trainingComplete });
 }
 
 function recommend(user, ctx) {
+  if (!_model) return;
+
+  const context = _globalCtx;
+  const model = _model;
+
+  const userVector = encodeUser(user, _globalCtx).dataSync();
+
+  const input = context.productVectors.map((v) => [...userVector, ...v.vector]);
   console.log("will recommend for user:", user);
-  // postMessage({
-  //     type: workerEvents.recommend,
-  //     user,
-  //     recommendations: []
-  // });
+
+  const inputTensor = tf.tensor2d(input);
+
+  const predictions = model.predict(inputTensor);
+
+  const scores = predictions.dataSync();
+
+  const recomendations = context.productVectors.map((entry, index) => {
+    return {
+      ...entry.meta,
+      name: entry.name,
+      score: scores[index],
+    };
+  });
+
+  const sortedItens = recomendations.sort((a, b) => b.score - a.score);
+
+  postMessage({
+    type: workerEvents.recommend,
+    user,
+    recommendations: sortedItens,
+  });
 }
 
 const handlers = {
